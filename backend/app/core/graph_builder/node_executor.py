@@ -109,7 +109,7 @@ class NodeExecutor:
             NodeExecutionError: If processor execution fails
         """
         try:
-            logger.info(f"🔄 Executing processor node: {node_id} ({gnode.type})")
+            logger.info(f"[PROCESSING] Executing processor node: {node_id} ({gnode.type})")
             
             # Extract user inputs for processor
             user_inputs = self.extract_user_inputs_for_processor(gnode, state)
@@ -168,7 +168,7 @@ class NodeExecutor:
                 "node_outputs": state.node_outputs
             }
             
-            logger.info(f"✅ Processor node {node_id} completed successfully")
+            logger.info(f"[SUCCESS] Processor node {node_id} completed successfully")
             logger.debug(f"Output: '{last_output[:80]}...' ({len(str(last_output))} chars)")
             
             return result_dict
@@ -199,7 +199,7 @@ class NodeExecutor:
             NodeExecutionError: If standard execution fails
         """
         try:
-            logger.info(f"🔄 Executing standard node: {node_id} ({gnode.type})")
+            logger.info(f"[PROCESSING] Executing standard node: {node_id} ({gnode.type})")
             
             # Use the standard graph node function
             node_func = gnode.node_instance.to_graph_node()
@@ -221,7 +221,7 @@ class NodeExecutor:
             except Exception as e:
                 logger.warning(f"[TEMPLATE] Failed to store standard node output for {node_id}: {e}")
             
-            logger.info(f"✅ Standard node {node_id} completed successfully")
+            logger.info(f"[SUCCESS] Standard node {node_id} completed successfully")
             logger.debug(f"Node {node_id} output: {str(result)[:200]}...")
             
             return result
@@ -250,8 +250,8 @@ class NodeExecutor:
         user_inputs = {}
         input_specs = gnode.node_instance.metadata.inputs
 
-        # Frontend genellikle node config'lerini gnode.user_data["inputs"] altında tutuyor.
-        # Önce buradan okumaya çalışıyoruz, sonra düz gnode.user_data ve state.variables'a bakıyoruz.
+        # Frontend typically stores node configs under gnode.user_data["inputs"].
+        # We first try to read from there, then fallback to plain gnode.user_data and state.variables.
         inputs_group = {}
         try:
             if isinstance(gnode.user_data, dict):
@@ -261,30 +261,30 @@ class NodeExecutor:
 
         for input_spec in input_specs:
             if not input_spec.is_connection:
-                # 1) Öncelik: data.inputs[...] (frontend form değerleri)
+                # 1) Priority: data.inputs[...] (frontend form values)
                 if isinstance(inputs_group, dict) and input_spec.name in inputs_group:
                     user_inputs[input_spec.name] = inputs_group[input_spec.name]
                     logger.debug(f"Found user input {input_spec.name} in user_data['inputs']")
-                # 2) Sonra: data[...] (düz user_data alanı)
+                # 2) Then: data[...] (flat user_data field)
                 elif input_spec.name in gnode.user_data:
                     user_inputs[input_spec.name] = gnode.user_data[input_spec.name]
                     logger.debug(f"Found user input {input_spec.name} in user_data (top-level)")
-                # 3) Sonra: state.variables
+                # 3) Then: state.variables
                 elif hasattr(state, 'variables') and input_spec.name in state.variables:
                     user_inputs[input_spec.name] = state.get_variable(input_spec.name)
                     logger.debug(f"Found user input {input_spec.name} in state.variables")
-                # 4) Varsayılan değer
+                # 4) Default value
                 elif input_spec.default is not None:
                     user_inputs[input_spec.name] = input_spec.default
                     logger.debug(f"Using default for {input_spec.name}: {input_spec.default}")
-                # 5) Zorunlu değilse ve değer yoksa atla
+                # 5) Skip if not required and no value found
                 elif not input_spec.required:
                     logger.debug(f"Skipping non-required input: {input_spec.name}")
                     continue
                 else:
                     logger.debug(f"No value found for required input {input_spec.name}, using default if any")
                     
-        # Ayrıca user_data'dan gelen özellikleri de dahil edin (ReactAgent gibi özelliklere sahip düğümler için)
+        # Also include properties from user_data (for nodes with properties like ReactAgent)
         if hasattr(gnode.node_instance, 'metadata') and hasattr(gnode.node_instance.metadata, 'properties'):    
             for prop in gnode.node_instance.metadata.properties:
                 if prop.name in gnode.user_data:
@@ -316,21 +316,15 @@ class NodeExecutor:
     
     def _get_primary_output_for_node(self, node_id: str, state: FlowState) -> Any:
         """
+        Determine the primary output value for a given node from FlowState.
 
-        FlowState'ten verilen bir düğüm için birincil çıktı değerini belirleyin.
-
-        Sezgisel yöntem:
-
-        - Eğer node_outputs[node_id] bir sözlük ise:
-
-        - 'output' tercih edin
-
-        - Ardından 'content'
-
-        - Yalnızca bir anahtar varsa tek değeri döndürün
-        - Aksi takdirde tüm sözlüğü döndürün
-        - Aksi takdirde, saklanan değeri doğrudan döndürün.
-
+        Heuristic:
+        - If node_outputs[node_id] is a dict:
+          - Prefer 'output'
+          - Then 'content'
+          - If only one key, return that single value
+          - Otherwise return the entire dict
+        - Otherwise, return the stored value directly.
         """
         if not hasattr(state, "node_outputs"):
             return None
@@ -352,13 +346,10 @@ class NodeExecutor:
     
     def _render_template_string(self, template_str: str, context: Dict[str, Any], node_id: str) -> str:
         """
-
-        Verilen bağlamla bir Jinja2 şablon dizesini işler.
-
-        İşleme başarısız olursa, orijinal dizeyi döndürür ve bir uyarı kaydeder.
-
+        Render a Jinja2 template string with the given context.
+        If rendering fails, return the original string and log a warning.
         """
-        # Gereksiz Jinja çalışmalarından kaçınmak için hızlı kontrol
+        # Quick check to avoid unnecessary Jinja processing
         if "{{" not in template_str or "}}" not in template_str:
             return template_str
         
@@ -376,20 +367,18 @@ class NodeExecutor:
         state: FlowState
     ) -> Dict[str, Any]:
         """
-        İşlemci kullanıcı girişlerine Jinja2 şablonlama uygulayın, böylece yukarı akış düğüm çıktılarına normalleştirilmiş görünen adla referans verebilirler.
+        Apply Jinja2 templating to processor user inputs so they can reference upstream node outputs by normalized display name.
 
-        İşlemci düğüm girişinde örnek kullanım:
-
-        "Önceki cevabı kullan: {{openai_gpt}}"
-
-        burada "OpenAI GPT", yukarı akış düğümünün görünen adıdır.
+        Example usage in processor node input:
+        "Use previous answer: {{openai_gpt}}"
+        where "OpenAI GPT" is the display name of the upstream node.
         """
         try:
-            # Bu yöntem yalnızca execute_processor_node'dan çağrılır, bu nedenle burada ek bir gnode.type filtresine ihtiyacımız yok.
+            # This method is only called from execute_processor_node, so no additional gnode.type filter needed here.
 
-            # Tüm işlemci düğümleri için şablonlama uygulayın.
+            # Apply templating for all processor nodes.
 
-            # node_outputs ve doldurulmuş bir nodes_registry'ye ihtiyacımız var.
+            # We need node_outputs and a populated nodes_registry.
             if not hasattr(state, "node_outputs") or not state.node_outputs:
                 return user_inputs
             if not getattr(self, "_nodes_registry", None):
@@ -408,16 +397,16 @@ class NodeExecutor:
                 if not graph_node:
                     continue
 
-                # Bu düğüm için önceliklendirilmiş bir aday ad listesi oluşturun:
+                # Build a prioritized list of candidate names for this node:
 
-                # 1) user_data["name"]'den gelen kullanıcı arayüzünde görünen ad (tuvalde gördüğünüz)
+                # 1) UI-visible name from user_data["name"] (what you see on the canvas)
                 # 2) NodeMetadata.display_name
                 # 3) NodeMetadata.name
                 # 4) GraphNodeInstance.metadata["display_name"/"name"]
-                # 5) Yedek: node_id
+                # 5) Fallback: node_id
                 alias_candidates: list[tuple[str, str]] = []
 
-                # 1) Kullanıcı arayüzü adı (en yüksek öncelik, kullanıcının ön uçta düzenlediği şey)
+                # 1) UI name (highest priority, what the user edited on the frontend)
                 ui_name = None
                 try:
                     user_data = getattr(graph_node, "user_data", {}) or {}
@@ -430,7 +419,7 @@ class NodeExecutor:
                 if ui_name:
                     alias_candidates.append(("ui_name", str(ui_name)))
 
-                # 2) Düğüm örneğindeki Pydantic NodeMetadata
+                # 2) Pydantic NodeMetadata from node instance
                 node_meta_model = None
                 try:
                     node_meta_model = getattr(graph_node.node_instance, "metadata", None)
@@ -464,8 +453,8 @@ class NodeExecutor:
                 if primary_value is None:
                     continue
 
-                # ÖZEL DURUM: Eğer bu bir StartNode ise, çıktısını da 'giriş' olarak ekleyin.
-                # Bu, {{input}}'un tıpkı bir sohbet sistemi gibi StartNode ile çalışmasına olanak tanır.
+                # SPECIAL CASE: If this is a StartNode, also add its output as 'input'.
+                # This allows {{input}} to work like a chat system with StartNode.
                 is_start_node = False
                 try:
                     if hasattr(graph_node, 'type') and graph_node.type == 'StartNode':
@@ -476,9 +465,9 @@ class NodeExecutor:
                 except Exception:
                     pass
 
-                # Mevcut anahtarların üzerine yazmadan tüm takma adları normalleştirin ve kaydedin.
-                # Bu, geriye dönük uyumluluğu (türe dayalı takma adlar) korurken
-                # {{openai_gpt}} gibi temiz kullanıcı arayüzüne dayalı takma adlara olanak tanır.
+                # Normalize and save all aliases without overwriting existing keys.
+                # This preserves backward compatibility (type-based aliases) while
+                # allowing clean UI-based aliases like {{openai_gpt}}.
                 for source_type, raw_name in alias_candidates:
                     normalized = self._normalize_display_name_for_template(raw_name)
                     if not normalized:
@@ -554,9 +543,9 @@ class NodeExecutor:
         # Check for pool-based connections first
         has_pool = self._has_pool_connections(gnode)
         if has_pool:
-            logger.debug(f"🔗 Extracting pool-enabled connections for {gnode.id}")
+            logger.debug(f"[CONNECT] Extracting pool-enabled connections for {gnode.id}")
         else:
-            logger.debug(f"🔗 Extracting connections for {gnode.id} (Clean Architecture)")
+            logger.debug(f"[CONNECT] Extracting connections for {gnode.id} (Clean Architecture)")
         
         try:
             # Use the clean connection extractor with proper nodes registry
@@ -567,9 +556,9 @@ class NodeExecutor:
             )
             
             if has_pool:
-                logger.debug(f"✅ Pool-aware connection extraction completed: {len(connected)} connections")
+                logger.debug(f"[SUCCESS] Pool-aware connection extraction completed: {len(connected)} connections")
             else:
-                logger.debug(f"✅ Clean connection extraction completed: {len(connected)} connections")
+                logger.debug(f"[SUCCESS] Clean connection extraction completed: {len(connected)} connections")
             
             # CRITICAL FIX: Validate connection formats before returning
             validated_connected = self._validate_and_fix_connection_formats(connected, gnode.id)
